@@ -29,7 +29,7 @@ def submit_inventory_update(_args):
 
 
 def submit_downloads(_args):
-    archive_list = get_inventory_list()
+    archive_list = get_inventory_list(_args.vault)
     archive_id_list = _args.archive_id + archive_list.loc[
         archive_list.FileName.isin(_args.archive_name), 'ArchiveId'].tolist()
     for aid in archive_id_list:
@@ -72,9 +72,9 @@ def parse_description(description):
 
 
 @lru_cache
-def get_inventory_list():
+def get_inventory_list(vault):
 
-    inventory_filename = os.path.join(get_meta_foler(), 'inventory_list.json')
+    inventory_filename = os.path.join(get_meta_foler(), f'inventory_list_{vault}.json')
     if os.path.exists(inventory_filename):
         with open(inventory_filename, 'r') as f:
             inventory_dict = json.load(f)
@@ -123,7 +123,7 @@ def check_and_handle_jobs(_args):
                     print(f'Processing ready job: {jid}')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
-                        with open(os.path.join(get_meta_foler(), 'inventory_list.json'), 'wb') as f:
+                        with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
                             f.write(res['body'].read())
                         print("Inventory list updated!")
                     elif action == "ArchiveRetrieval":
@@ -142,6 +142,19 @@ def check_and_handle_jobs(_args):
         traceback.print_exc()
 
 
+def list_inventory(_args):
+
+    def size_formatter(size):
+        for unit in ['Bytes', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return "{:.03f} {}".format(size, unit)
+            size /= 1024.0
+        return "{:.03f}{}".format(size, unit)
+    fields = [x.strip() for x in _args.fields.split(',')]
+    inventory_list = get_inventory_list(_args.vault)
+    print(inventory_list[fields].to_string(index=False, formatters={'Size': size_formatter}))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='AWS Glacier Operator')
     parser.add_argument("--no-watch-dog", action='store_true')
@@ -149,15 +162,24 @@ if __name__ == '__main__':
 
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
 
-    parser_update_inventory_list = subparsers.add_parser('inventory_update', help="Submit inventory update request")
-    parser_update_inventory_list.set_defaults(func=submit_inventory_update)
+    parser_list_inventory = subparsers.add_parser(
+        'inventory_update', help="List archives according to local record (note might be outdated)"
+    )
+    parser_list_inventory.add_argument('-f', '--fields', default="FileName,Size", type=str,
+                                       help="Fields of archive list, one or more from "
+                                            "{FileName,Size,CreationDate,LastModify,ArchiveId,SHA256TreeHash},"
+                                            "sepearted by comma (,).")
+    parser_list_inventory.set_defaults(func=submit_inventory_update)
 
-    parser_download = subparsers.add_parser("download", help="download archive")
-    parser_download.add_argument('-id', '--archive-id', default=[], nargs='+',  help="download by archive id")
-    parser_download.add_argument('-n', '--archive-name', default=[], nargs='+',  help="download by archive name")
+    parser_update_inventory_list = subparsers.add_parser('inventory_update', help="Submit inventory update request")
+    parser_update_inventory_list.set_defaults(func=list_inventory)
+
+    parser_download = subparsers.add_parser("download", help="Download archive")
+    parser_download.add_argument('-id', '--archive-id', default=[], nargs='+',  help="Download by archive id")
+    parser_download.add_argument('-n', '--archive-name', default=[], nargs='+',  help="Download by archive name")
     parser_download.set_defaults(func=submit_downloads)
 
-    parser_download = subparsers.add_parser("process_job", help="check status of submitted jobs and process if ready")
+    parser_download = subparsers.add_parser("process_job", help="Check status of submitted jobs and process if ready")
     parser_download.add_argument('--download-chunk-size', type=int, default=16, help="download chunksize")
     parser_download.set_defaults(func=check_and_handle_jobs)
 
