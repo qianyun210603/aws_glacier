@@ -163,7 +163,7 @@ if __name__ == '__main__':
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
 
     parser_list_inventory = subparsers.add_parser(
-        'inventory_update', help="List archives according to local record (note might be outdated)"
+        'list', help="List archives according to local record (note might be outdated)"
     )
     parser_list_inventory.add_argument('-f', '--fields', default="FileName,Size", type=str,
                                        help="Fields of archive list, one or more from "
