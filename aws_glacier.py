@@ -32,7 +32,7 @@ def submit_downloads(_args):
     archive_list = get_inventory_list(_args.vault)
     archive_id_list = _args.archive_id + archive_list.loc[
         archive_list.FileName.isin(_args.archive_name), 'ArchiveId'].tolist()
-    for aid in archive_id_list:
+    for aid in set(archive_id_list):
         search_filename = archive_list.loc[archive_list.ArchiveId == aid, 'FileName']
         fname = 'Unknow' if search_filename.empty else search_filename.iloc[0]
         jobParameters = {
@@ -174,9 +174,9 @@ if __name__ == '__main__':
     parser_update_inventory_list = subparsers.add_parser('inventory_update', help="Submit inventory update request")
     parser_update_inventory_list.set_defaults(func=submit_inventory_update)
 
-    parser_download = subparsers.add_parser("download", help="Download archive")
-    parser_download.add_argument('-id', '--archive-id', default=[], nargs='+',  help="Download by archive id")
-    parser_download.add_argument('-n', '--archive-name', default=[], nargs='+',  help="Download by archive name")
+    parser_download = subparsers.add_parser("download", help="Download archive by name and/or archive id")
+    parser_download.add_argument('-id', '--archive-id', default=[], nargs='+',  help="Archive ids")
+    parser_download.add_argument('-n', '--archive-name', default=[], nargs='+',  help="Archive names")
     parser_download.set_defaults(func=submit_downloads)
 
     parser_download = subparsers.add_parser("process_job", help="Check status of submitted jobs and process if ready")
@@ -184,11 +184,12 @@ if __name__ == '__main__':
     parser_download.set_defaults(func=check_and_handle_jobs)
 
     args = parser.parse_args()
-    args.func(args)
     print(args)
+    if 'func' in args:
+        args.func(args)
 
     if not args.no_watch_dog and args.command in ('inventory_update', "download"):
         import subprocess
         with open("glacier.log", "wb") as out:
-            subprocess.Popen(f"python main.py -v {args.vault} process_job", shell=True, stdout=out, stderr=out)
+            subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job", shell=True, stdout=out, stderr=out)
         exit(0)
