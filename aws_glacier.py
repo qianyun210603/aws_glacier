@@ -187,7 +187,7 @@ if __name__ == '__main__':
     args.func(args)
     print(args)
 
-    if not args.no_watch_dog and args.command != "process_job":
+    if not args.no_watch_dog and args.command in ('inventory_update', "download"):
         import subprocess
         with open("glacier.log", "wb") as out:
             subprocess.Popen(f"python main.py -v {args.vault} process_job", shell=True, stdout=out, stderr=out)
