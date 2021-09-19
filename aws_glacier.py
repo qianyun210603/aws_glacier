@@ -169,10 +169,10 @@ if __name__ == '__main__':
                                        help="Fields of archive list, one or more from "
                                             "{FileName,Size,CreationDate,LastModify,ArchiveId,SHA256TreeHash},"
                                             "sepearted by comma (,).")
-    parser_list_inventory.set_defaults(func=submit_inventory_update)
+    parser_list_inventory.set_defaults(func=list_inventory)
 
     parser_update_inventory_list = subparsers.add_parser('inventory_update', help="Submit inventory update request")
-    parser_update_inventory_list.set_defaults(func=list_inventory)
+    parser_update_inventory_list.set_defaults(func=submit_inventory_update)
 
     parser_download = subparsers.add_parser("download", help="Download archive")
     parser_download.add_argument('-id', '--archive-id', default=[], nargs='+',  help="Download by archive id")
