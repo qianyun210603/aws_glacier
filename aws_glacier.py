@@ -12,8 +12,7 @@ import xml.etree.ElementTree as ET
 import base64
 
 MAX_RETRY = 10
-glacier = boto3.client('glacier', region_name="us-west-2", aws_access_key_id='AKIAS243QTJTIR5V4X6E',
-                       aws_secret_access_key='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')
+glacier = boto3.client('glacier')
 
 
 def submit_inventory_update(_args):
