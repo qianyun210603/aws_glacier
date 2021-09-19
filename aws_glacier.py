@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import sys
 import argparse
 import boto3
 import pandas as pd
@@ -10,6 +11,7 @@ import json
 from functools import lru_cache
 import xml.etree.ElementTree as ET
 import base64
+from tabulate import tabulate
 
 MAX_RETRY = 10
 glacier = boto3.client('glacier')
@@ -106,26 +108,27 @@ def download_job(job_output):
 def check_and_handle_jobs(_args):
     job_processed = set()
     retry_count = MAX_RETRY
+    myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
     try:
         while True:
-            print("Checking Jobs:")
+            myout.write("Checking Jobs:")
             jobs = glacier.list_jobs(vaultName=_args.vault)
             if jobs['ResponseMetadata']['HTTPStatusCode'] // 100 != 2:
-                print("Cannot get job list, retry after 10 seconds ...")
+                myout.write("Cannot get job list, retry after 10 seconds ...")
                 retry_count -= 1
                 if retry_count <= 0:
-                    print("Maximum retris reached, exit!")
+                    myout.write("Maximum retris reached, exit!")
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
             for jid, action in job_df.loc[job_df.Completed, ['JobId', 'Action']].values:
                 if jid not in job_processed:
-                    print(f'Processing ready job: {jid}')
+                    myout.write(f'Processing ready job: {jid}')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
                         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
                             f.write(res['body'].read())
-                        print("Inventory list updated!")
+                        myout.write("Inventory list updated!")
                     elif action == "ArchiveRetrieval":
                         download_job(res)
                     job_processed.add(jid)
@@ -134,12 +137,14 @@ def check_and_handle_jobs(_args):
             job_df.CreationDate = pd.to_datetime(job_df.CreationDate)
             earliest = job_df.loc[~job_df.Completed, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
-            print(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}")
+            myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}")
             time.sleep(
                 (until - pd.Timestamp.utcnow()).total_seconds()
             )
     except Exception:
-        traceback.print_exc()
+        myout.write(traceback.format_exc())
+    finally:
+        myout.close()
 
 
 def list_inventory(_args):
@@ -150,9 +155,12 @@ def list_inventory(_args):
                 return "{:.03f} {}".format(size, unit)
             size /= 1024.0
         return "{:.03f}{}".format(size, unit)
-    fields = [x.strip() for x in _args.fields.split(',')]
-    inventory_list = get_inventory_list(_args.vault)
-    print(inventory_list[fields].to_string(index=False, formatters={'Size': size_formatter}))
+
+    cols = [x.strip() for x in _args.columns.split(',')]
+    inventory_list = get_inventory_list(_args.vault).sort_values(by='FileName')
+    filtered = inventory_list.loc[inventory_list.FileName.str.match(_args.filter), cols]
+    filtered.Size = filtered.Size.apply(size_formatter)
+    print(tabulate(filtered[cols], showindex=False, headers=cols))
 
 
 if __name__ == '__main__':
@@ -165,10 +173,12 @@ if __name__ == '__main__':
     parser_list_inventory = subparsers.add_parser(
         'list', help="List archives according to local record (note might be outdated)"
     )
-    parser_list_inventory.add_argument('-f', '--fields', default="FileName,Size", type=str,
-                                       help="Fields of archive list, one or more from "
+    parser_list_inventory.add_argument('-c', '--columns', default="FileName,Size", type=str,
+                                       help="Columns of archive list, one or more from "
                                             "{FileName,Size,CreationDate,LastModify,ArchiveId,SHA256TreeHash},"
                                             "sepearted by comma (,).")
+    parser_list_inventory.add_argument('-f', '--filter', default="", type=str,
+                                       help="Regex to filter FileName")
     parser_list_inventory.set_defaults(func=list_inventory)
 
     parser_update_inventory_list = subparsers.add_parser('inventory_update', help="Submit inventory update request")
@@ -181,15 +191,18 @@ if __name__ == '__main__':
 
     parser_download = subparsers.add_parser("process_job", help="Check status of submitted jobs and process if ready")
     parser_download.add_argument('--download-chunk-size', type=int, default=16, help="download chunksize")
+    parser_download.add_argument('--log-file', type=str, default="", help="log file name")
     parser_download.set_defaults(func=check_and_handle_jobs)
 
     args = parser.parse_args()
-    print(args)
+
+    # print(args)
+
     if 'func' in args:
         args.func(args)
 
     if not args.no_watch_dog and args.command in ('inventory_update', "download"):
         import subprocess
-        with open("glacier.log", "wb") as out:
-            subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job", shell=True, stdout=out, stderr=out)
+        subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log",
+                         shell=True)
         exit(0)

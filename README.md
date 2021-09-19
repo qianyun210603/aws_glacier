@@ -3,10 +3,11 @@
 Convinient script for Amazon S3 Glacier by Python3
 
 ### Prerequisites
-- python 3.8+ (Might work with lower python3 version)
+The script requires Python 3 (It is developed under python 3.8.3)
 - pandas
 - boto3
 - base64
+- tabulate
 
 - All prerequisites are available in `pip`.
 
