@@ -111,7 +111,7 @@ def check_and_handle_jobs(_args):
     retry_count = MAX_RETRY
     myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
     if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status')):
-        with open(os.path.join(get_meta_foler(), 'watchdog_status'), 'r') as f:
+        with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
             myout.write("Another watchdog is running, exit.\n")
@@ -145,7 +145,7 @@ def check_and_handle_jobs(_args):
             if job_df.Completed.all():
                 status['Running'] = False
                 status['Completed'] = job_df[['JobId', 'CreationDate']].set_index('JobId').to_dict()['CreationDate']
-                with open(os.path.join(get_meta_foler(), 'watchdog_status'), 'w') as f:
+                with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
                     json.dump(status, f)
                 break
             remaining = job_df.loc[~job_df.Completed, 'CreationDate'].copy()
