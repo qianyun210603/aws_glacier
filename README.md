@@ -9,7 +9,7 @@ The script requires Python 3 (It is developed under python 3.8.3)
 - base64
 - tabulate
 
-- All prerequisites are available in `pip`.
+All prerequisites are available in `pip`.
 
 ### Install on Linux
 * Setup AWS configures, can be done via AWS CLI.
@@ -25,7 +25,7 @@ The script requires Python 3 (It is developed under python 3.8.3)
     ```
 
 ### Usage
-```bash
+```commandline
 # aws_glacier -h
 usage: aws_glacier.py [-h] [--no-watch-dog] -v VAULT {list,inventory_update,download,process_job} ...
 
@@ -45,3 +45,57 @@ optional arguments:
   -v VAULT, --vault VAULT
 ```
 
+##### Inventory Check and Update
+- `list` subcommand lists archive according to local record stored in `$HOME/.aws_glacier/inventory_list_{vault}.json`
+  ```commandline
+  # aws_glacier list -h
+  usage: aws_glacier list [-h] [-c COLUMNS] [-f FILTER]
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    -c COLUMNS, --columns COLUMNS
+                          Columns of archive list, one or more from {FileName,Size,CreationDate,LastModify,ArchiveId,SHA256TreeHash},sepearted by comma (,).
+    -f FILTER, --filter FILTER
+                          Regex to filter FileName
+  ```
+- `inventory_update` subcommand submits a job to update the records in `$HOME/.aws_glacier/inventory_list_{vault}.json`.
+  if `--no-watchdog` argument is not specified, it will also start a `process_job` process on the background for future job result retrieval.
+  ```commandline
+  # aws_glacier inventory_update -h
+  usage: aws_glacier inventory_update [-h]
+  
+  optional arguments:
+    -h, --help  show this help message and exit
+  ```
+
+##### Download
+`download` subcommand submit a download request of archives by name and/or archive id. 
+If `--no-watchdog` argument is not specified, it will also start a `process_job` process on the background for future job result retrieval.
+```commandline
+# aws_glacier download -h
+usage: aws_glacier download [-h] [-id ARCHIVE_ID [ARCHIVE_ID ...]] [-n ARCHIVE_NAME [ARCHIVE_NAME ...]]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -id ARCHIVE_ID [ARCHIVE_ID ...], --archive-id ARCHIVE_ID [ARCHIVE_ID ...]
+                        Archive ids
+  -n ARCHIVE_NAME [ARCHIVE_NAME ...], --archive-name ARCHIVE_NAME [ARCHIVE_NAME ...]
+                        Archive names
+```
+
+##### Job Status Check and Processing
+`process_job` subcommand monitors status of submitted jobs and process them when ready.
+```commandline
+# aws_glacier process_job -h
+usage: aws_glacier process_job [-h] [--download-chunk-size DOWNLOAD_CHUNK_SIZE] [--log-file LOG_FILE]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --download-chunk-size DOWNLOAD_CHUNK_SIZE
+                        download chunksize
+  --log-file LOG_FILE   log file name
+```
+
+### Future plan
+- [ ] Upload related functionalitis
+- [ ] Archive deletion

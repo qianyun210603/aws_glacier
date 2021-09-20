@@ -112,7 +112,7 @@ def check_and_handle_jobs(_args):
     job_processed = dict()
     retry_count = MAX_RETRY
     myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
-    if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status')):
+    if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status.json')):
         with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
@@ -134,8 +134,9 @@ def check_and_handle_jobs(_args):
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
             myout.flush()
+            myout.write(str(job_processed) + '\n')
             for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
-                if job_processed.get(jid, pd.Timestamp(0)) != cdate:
+                if job_processed.get(jid, "") != cdate:
                     myout.write(f'Processing ready job: {jid}\n')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
@@ -185,7 +186,7 @@ def list_inventory(_args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='AWS Glacier Operator')
-    parser.add_argument("--no-watch-dog", action='store_true')
+    parser.add_argument("--no-watchdog", action='store_true')
     parser.add_argument('-v', '--vault', type=str, required=True)
 
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
@@ -223,7 +224,7 @@ if __name__ == '__main__':
     if 'func' in args:
         args.func(args)
 
-    if not args.no_watch_dog and args.command in ('inventory_update', "download", 'debug'):
+    if not args.no_watchdog and args.command in ('inventory_update', "download", 'debug'):
         import subprocess
         if 'windows' in platform.system().lower():
             subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log &",
