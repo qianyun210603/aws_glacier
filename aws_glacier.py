@@ -102,8 +102,10 @@ def download_job(job_output, myout=sys.stdout):
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=64*1024*1024):
             bytes_written += f.write(chunk)
-            print("{} of {} ({:.2%}) written".format(bytes_written, total_length, bytes_written/total_length))
+            myout.write(("{} of {} ({:.2%}) written\n".format(bytes_written, total_length, bytes_written/total_length)))
+            myout.flush()
     myout.write(f"Finish downloading {filename} to {usename}\n")
+    myout.flush()
 
 
 def check_and_handle_jobs(_args):
@@ -131,6 +133,7 @@ def check_and_handle_jobs(_args):
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
+            myout.flush()
             for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
                 if job_processed.get(jid, pd.Timestamp(0)) != cdate:
                     myout.write(f'Processing ready job: {jid}\n')
@@ -142,6 +145,7 @@ def check_and_handle_jobs(_args):
                     elif action == "ArchiveRetrieval":
                         download_job(res, myout)
                     job_processed[jid] = cdate
+                myout.flush()
             if job_df.Completed.all():
                 status['Running'] = False
                 status['Completed'] = job_df[['JobId', 'CreationDate']].set_index('JobId').to_dict()['CreationDate']
@@ -153,6 +157,7 @@ def check_and_handle_jobs(_args):
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
             myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
+            myout.flush()
             time.sleep(
                 (until - pd.Timestamp.utcnow()).total_seconds()
             )
@@ -213,7 +218,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    print(args)
+    # print(args)
 
     if 'func' in args:
         args.func(args)
