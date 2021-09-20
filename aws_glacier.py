@@ -152,7 +152,7 @@ def check_and_handle_jobs(_args):
                 with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
                     json.dump(status, f)
                 break
-            remaining = job_df.loc[~job_df.Completed, 'CreationDate'].copy()
+            remaining = job_df[~job_df.Completed].copy()
             remaining.CreationDate = pd.to_datetime(remaining.CreationDate)
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
