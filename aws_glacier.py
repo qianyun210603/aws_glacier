@@ -12,6 +12,7 @@ from functools import lru_cache
 import xml.etree.ElementTree as ET
 import base64
 from tabulate import tabulate
+import platform
 
 MAX_RETRY = 10
 glacier = boto3.client('glacier')
@@ -89,60 +90,74 @@ def get_inventory_list(vault):
     )
 
 
-def download_job(job_output):
+def download_job(job_output, myout=sys.stdout):
     filename, _ = parse_description(job_output['archiveDescription'])
     usename = filename
     suffix = 0
     while os.path.exists(usename):
         usename = filename + '.' + str(suffix)
-    print(f"Start downloading {filename} to {usename}")
+    myout.write(f"Start downloading {filename} to {usename}\n")
     total_length = float(job_output['ResponseMetadata']['HTTPHeaders']['content-length'])
     bytes_written = 0
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=64*1024*1024):
             bytes_written += f.write(chunk)
             print("{} of {} ({:.2%}) written".format(bytes_written, total_length, bytes_written/total_length))
-    print(f"Finish downloading {filename} to {usename}")
+    myout.write(f"Finish downloading {filename} to {usename}\n")
 
 
 def check_and_handle_jobs(_args):
-    job_processed = set()
+    job_processed = dict()
     retry_count = MAX_RETRY
     myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
+    if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status')):
+        with open(os.path.join(get_meta_foler(), 'watchdog_status'), 'r') as f:
+            status = json.load(f)
+        if status['Running']:
+            myout.write("Another watchdog is running, exit.\n")
+            myout.close()
+            return
+        status['Running'] = True
+        job_processed.update(status.get("Completed", dict()))
     try:
         while True:
-            myout.write("Checking Jobs:")
+            myout.write("Checking Jobs:\n")
             jobs = glacier.list_jobs(vaultName=_args.vault)
             if jobs['ResponseMetadata']['HTTPStatusCode'] // 100 != 2:
-                myout.write("Cannot get job list, retry after 10 seconds ...")
+                myout.write("Cannot get job list, retry after 10 seconds ...\n")
                 retry_count -= 1
                 if retry_count <= 0:
-                    myout.write("Maximum retris reached, exit!")
+                    myout.write("Maximum retris reached, exit!\n")
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
-            for jid, action in job_df.loc[job_df.Completed, ['JobId', 'Action']].values:
-                if jid not in job_processed:
-                    myout.write(f'Processing ready job: {jid}')
+            for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
+                if job_processed.get(jid, pd.Timestamp(0)) != cdate:
+                    myout.write(f'Processing ready job: {jid}\n')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
                         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
                             f.write(res['body'].read())
-                        myout.write("Inventory list updated!")
+                        myout.write("Inventory list updated!\n")
                     elif action == "ArchiveRetrieval":
-                        download_job(res)
-                    job_processed.add(jid)
+                        download_job(res, myout)
+                    job_processed[jid] = cdate
             if job_df.Completed.all():
+                status['Running'] = False
+                status['Completed'] = job_df[['JobId', 'CreationDate']].set_index('JobId').to_dict()['CreationDate']
+                with open(os.path.join(get_meta_foler(), 'watchdog_status'), 'w') as f:
+                    json.dump(status, f)
                 break
-            job_df.CreationDate = pd.to_datetime(job_df.CreationDate)
-            earliest = job_df.loc[~job_df.Completed, 'CreationDate'].min()
+            remaining = job_df.loc[~job_df.Completed, 'CreationDate'].copy()
+            remaining.CreationDate = pd.to_datetime(remaining.CreationDate)
+            earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
-            myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}")
+            myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
             time.sleep(
                 (until - pd.Timestamp.utcnow()).total_seconds()
             )
     except Exception:
-        myout.write(traceback.format_exc())
+        myout.write(traceback.format_exc()+'\n')
     finally:
         myout.close()
 
@@ -189,20 +204,26 @@ if __name__ == '__main__':
     parser_download.add_argument('-n', '--archive-name', default=[], nargs='+',  help="Archive names")
     parser_download.set_defaults(func=submit_downloads)
 
-    parser_download = subparsers.add_parser("process_job", help="Check status of submitted jobs and process if ready")
-    parser_download.add_argument('--download-chunk-size', type=int, default=16, help="download chunksize")
-    parser_download.add_argument('--log-file', type=str, default="", help="log file name")
-    parser_download.set_defaults(func=check_and_handle_jobs)
+    parser_process = subparsers.add_parser("process_job", help="Check status of submitted jobs and process if ready")
+    parser_process.add_argument('--download-chunk-size', type=int, default=16, help="download chunksize")
+    parser_process.add_argument('--log-file', type=str, default="", help="log file name")
+    parser_process.set_defaults(func=check_and_handle_jobs)
+
+    parser_debug = subparsers.add_parser("debug", help="Just for debugging")
 
     args = parser.parse_args()
 
-    # print(args)
+    print(args)
 
     if 'func' in args:
         args.func(args)
 
-    if not args.no_watch_dog and args.command in ('inventory_update', "download"):
+    if not args.no_watch_dog and args.command in ('inventory_update', "download", 'debug'):
         import subprocess
-        subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log",
-                         shell=True)
+        if 'windows' in platform.system().lower():
+            subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log &",
+                             shell=True)
+        if 'linux' in platform.system().lower():
+            subprocess.Popen(f"aws_glacier -v {args.vault} process_job --log-file glacier.log &",
+                             shell=True)
         exit(0)
