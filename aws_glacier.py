@@ -120,6 +120,8 @@ def check_and_handle_jobs(_args):
             myout.close()
             return
         status['Running'] = True
+        with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
+            json.dump(status, f)
         job_processed.update(status.get("Completed", dict()))
     try:
         while True:
