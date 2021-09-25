@@ -38,12 +38,6 @@ def submit_downloads(_args):
     for aid in set(archive_id_list):
         search_filename = archive_list.loc[archive_list.ArchiveId == aid, 'FileName']
         fname = 'Unknow' if search_filename.empty else search_filename.iloc[0]
-        jobParameters = {
-            'Description': f'Download {fname}',
-            'Type': 'archive-retrieval',
-            'ArchiveId': aid
-        }
-        print(jobParameters)
         init_response = glacier.initiate_job(
             vaultName=_args.vault,
             jobParameters={
@@ -112,7 +106,9 @@ def check_and_handle_jobs(_args):
     job_processed = dict()
     retry_count = MAX_RETRY
     myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
+    status = {'Running': False}
     if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status.json')):
+        myout.write("Loading status ...\n")
         with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
@@ -170,6 +166,23 @@ def check_and_handle_jobs(_args):
         myout.close()
 
 
+def delete_archive(_args):
+    archive_list = get_inventory_list(_args.vault)
+    archive_id_list = _args.archive_id + archive_list.loc[
+        archive_list.FileName.isin(_args.archive_name), 'ArchiveId'].tolist()
+    for aid in archive_id_list:
+        search_filename = archive_list.loc[archive_list.ArchiveId == aid, 'FileName']
+        fname = 'Unknow' if search_filename.empty else search_filename.iloc[0]
+        try:
+            delete_res = glacier.delete_archive(vaultName=_args.vault, archiveId=aid)
+            if delete_res['HTTPStatusCode']  // 100 == 2:
+                print(f"{fname}(id: {aid}) deleted.")
+            else:
+                print("Error: ", str(delete_res))
+        except glacier.exceptions.ResourceNotFoundException:
+            print(f"{fname}(id: {aid}) not found.")
+
+
 def list_inventory(_args):
 
     def size_formatter(size):
@@ -216,6 +229,11 @@ if __name__ == '__main__':
     parser_process.add_argument('--download-chunk-size', type=int, default=16, help="download chunksize")
     parser_process.add_argument('--log-file', type=str, default="", help="log file name")
     parser_process.set_defaults(func=check_and_handle_jobs)
+
+    parser_delete = subparsers.add_parser("delete", help="Delete archive by name and/or id.")
+    parser_delete.add_argument('-id', '--archive-id', default=[], nargs='+',  help="Archive ids")
+    parser_delete.add_argument('-n', '--archive-name', default=[], nargs='+',  help="Archive names")
+    parser_delete.set_defaults(func=delete_archive)
 
     parser_debug = subparsers.add_parser("debug", help="Just for debugging")
 
