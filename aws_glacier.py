@@ -175,7 +175,7 @@ def delete_archive(_args):
         fname = 'Unknow' if search_filename.empty else search_filename.iloc[0]
         try:
             delete_res = glacier.delete_archive(vaultName=_args.vault, archiveId=aid)
-            if delete_res['HTTPStatusCode']  // 100 == 2:
+            if delete_res['ResponseMetadata']['HTTPStatusCode']  // 100 == 2:
                 print(f"{fname}(id: {aid}) deleted.")
             else:
                 print("Error: ", str(delete_res))
