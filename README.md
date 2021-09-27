@@ -8,6 +8,8 @@ The script requires Python 3 (It is developed under python 3.8.3)
 - boto3
 - base64
 - tabulate
+- binascii
+- hashlib
 
 All prerequisites are available in `pip`.
 
@@ -95,6 +97,38 @@ optional arguments:
   --log-file LOG_FILE   log file name
 ```
 
+##### Upload File(s)
+`upload` subcommand uploads file to AWS vaults as 'archives'.
+```commandline
+python aws_glacier.py upload -h
+usage: aws_glacier.py upload [-h] [-f FILE_PATHS [FILE_PATHS ...]] [--num-threads NUM_THREADS] [--upload-chunk-size UPLOAD_CHUNK_SIZE]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -f FILE_PATHS [FILE_PATHS ...], --file-paths FILE_PATHS [FILE_PATHS ...]
+                        Files to upload
+  --num-threads NUM_THREADS
+                        No. of threads for parallel upload.
+  --upload-chunk-size UPLOAD_CHUNK_SIZE
+                        Upload chunksize (MB, between 4-4096 and power of 2)
+```
+
+
+##### Delete Archive(s)
+`delete` subcommand deletes archives by name and/or archive id. 
+```commandline
+# aws_glacier delete -h
+usage: aws_glacier delete [-h] [-id ARCHIVE_ID [ARCHIVE_ID ...]] [-n ARCHIVE_NAME [ARCHIVE_NAME ...]]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -id ARCHIVE_ID [ARCHIVE_ID ...], --archive-id ARCHIVE_ID [ARCHIVE_ID ...]
+                        Archive ids
+  -n ARCHIVE_NAME [ARCHIVE_NAME ...], --archive-name ARCHIVE_NAME [ARCHIVE_NAME ...]
+                        Archive names
+```
+
 ### Future plan
 - [ ] Upload related functionalitis
 - [ ] Archive deletion
+- [ ] Auto update local records after upload and deletion
