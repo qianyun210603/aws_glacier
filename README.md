@@ -127,8 +127,3 @@ optional arguments:
   -n ARCHIVE_NAME [ARCHIVE_NAME ...], --archive-name ARCHIVE_NAME [ARCHIVE_NAME ...]
                         Archive names
 ```
-
-### Future plan
-- [ ] Upload related functionalitis
-- [ ] Archive deletion
-- [ ] Auto update local records after upload and deletion

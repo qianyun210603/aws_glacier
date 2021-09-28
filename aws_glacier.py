@@ -133,8 +133,7 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
 
     print('Spawning threads...')
     fileblock = threading.Lock()
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=num_threads) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures_list = {executor.submit(
             upload_part, job, vault_name, upload_id, part_size, file_to_upload,
             file_size, num_parts, fileblock): job // part_size for job in job_list}
@@ -176,7 +175,6 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
     print(f'{file_path} uploaded successful.')
     print('Calculated total tree hash: %s' % total_tree_hash)
     print('Glacier total tree hash: %s' % response['checksum'])
-    print(response)
     print('Done.')
     file_to_upload.close()
     result = {
@@ -500,7 +498,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    print(args)
+    # print(args)
 
     if 'func' in args:
         args.func(args)
