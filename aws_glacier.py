@@ -367,6 +367,7 @@ def check_and_handle_jobs(_args):
                 retry_count -= 1
                 if retry_count <= 0:
                     myout.write("Maximum retris reached, exit!\n")
+                    break
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
@@ -386,7 +387,7 @@ def check_and_handle_jobs(_args):
                 myout.flush()
             if job_df.Completed.all():
                 status['Running'] = False
-                status['Completed'] = job_df[['JobId', 'CreationDate']].set_index('JobId').to_dict()['CreationDate']
+                status['Completed'] = job_processed
                 with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
                     json.dump(status, f)
                 break
