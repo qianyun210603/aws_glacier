@@ -346,16 +346,16 @@ def check_and_handle_jobs(_args):
     retry_count = MAX_RETRY
     myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
     status = {'Running': False}
-    if os.path.exists(os.path.join(get_meta_foler(), 'watchdog_status.json')):
+    if os.path.exists(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json')):
         myout.write("Loading status ...\n")
-        with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'r') as f:
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
             myout.write("Another watchdog is running, exit.\n")
             myout.close()
             return
         status['Running'] = True
-        with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
             json.dump(status, f)
         job_processed.update(status.get("Completed", dict()))
     try:
@@ -372,7 +372,6 @@ def check_and_handle_jobs(_args):
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
             myout.flush()
-            myout.write(str(job_processed) + '\n')
             for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
                 if job_processed.get(jid, "") != cdate:
                     myout.write(f'Processing ready job: {jid}\n')
@@ -382,14 +381,11 @@ def check_and_handle_jobs(_args):
                             f.write(res['body'].read())
                         myout.write("Inventory list updated!\n")
                     elif action == "ArchiveRetrieval":
-                        download_job(res, _args.download_chunk_size, myout)
+                        download_job(res, _args.download_chunk_size*1024**2, myout)
                     job_processed[jid] = cdate
                 myout.flush()
             if job_df.Completed.all():
-                status['Running'] = False
                 status['Completed'] = job_processed
-                with open(os.path.join(get_meta_foler(), 'watchdog_status.json'), 'w') as f:
-                    json.dump(status, f)
                 break
             remaining = job_df[~job_df.Completed].copy()
             remaining.CreationDate = pd.to_datetime(remaining.CreationDate)
@@ -403,6 +399,9 @@ def check_and_handle_jobs(_args):
     except Exception:
         myout.write(traceback.format_exc()+'\n')
     finally:
+        status['Running'] = False
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
+            json.dump(status, f)
         myout.close()
 
 
