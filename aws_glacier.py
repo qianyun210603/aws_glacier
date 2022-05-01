@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 import base64
 from tabulate import tabulate
 import platform
+from tzlocal import get_localzone
+
 
 MAX_RETRY = 10
 glacier = boto3.client('glacier')
@@ -53,7 +55,7 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
 
     file_size = file_to_upload.seek(0, 2)
 
-    nowtime = pd.Timestamp.utcnow()
+    nowtime = pd.Timestamp.now(tz=get_localzone())
     encoded_filename =  base64.b64encode(os.path.basename(file_path).encode()).decode()
     arc_desc = f'<m><v>4</v><p>{encoded_filename}</p><lm>{nowtime.strftime("%Y%m%dT%H%M%SZ")}</lm></m>'
 
@@ -254,7 +256,7 @@ def submit_inventory_update(_args):
     init_response = glacier.initiate_job(
         vaultName=_args.vault,
         jobParameters={
-            'Description': f'inventory job @ {pd.Timestamp.now().isoformat()}',
+            'Description': f'inventory job @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
             'Type': 'inventory-retrieval',
         })
     if init_response['ResponseMetadata']['HTTPStatusCode'] // 100 == 2:
@@ -296,7 +298,7 @@ def parse_description(description):
         root = ET.fromstring(description)
         # noinspection PyTypeChecker
         return pd.Series(
-            [base64.b64decode(root.find('p').text).decode('utf-8'), pd.Timestamp(root.find('lm').text)],
+            [base64.b64decode(root.find('p').text).decode('utf-8'), pd.Timestamp(root.find('lm').text).tz_convert(get_localzone())],
             index=['FileName', 'LastModify'])
     return pd.Series([description, pd.NaT], index=['FileName', 'LastModify'])
 
@@ -318,7 +320,7 @@ def get_inventory_list(inventory_dict):
         )
     archive_list = inventory_dict['ArchiveList']
     df = pd.DataFrame(archive_list)
-    df.CreationDate = pd.to_datetime(df.CreationDate)
+    df.CreationDate = pd.to_datetime(df.CreationDate).tz_convert(tz=get_localzone())
     return pd.concat([df, df.ArchiveDescription.apply(parse_description)], axis=1)
 
 
@@ -388,7 +390,7 @@ def check_and_handle_jobs(_args):
                 status['Completed'] = job_processed
                 break
             remaining = job_df[~job_df.Completed].copy()
-            remaining.CreationDate = pd.to_datetime(remaining.CreationDate)
+            remaining.CreationDate = pd.to_datetime(remaining.CreationDate).tz_convert(tz=get_localzone())
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
             myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
