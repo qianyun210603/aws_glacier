@@ -3,6 +3,7 @@ import binascii
 import threading
 import concurrent.futures
 import math
+import tqdm
 import sys
 import hashlib
 import argparse
@@ -18,6 +19,7 @@ import base64
 from tabulate import tabulate
 import platform
 from tzlocal import get_localzone
+from loguru import logger
 
 
 MAX_RETRY = 10
@@ -37,7 +39,7 @@ def upload_archive(_args):
         raw_inventory_dict['ArchiveList'].extend(upload_results)
         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
             json.dump(raw_inventory_dict, f)
-        print("Local Inventory records updated")
+        logger.info("Local Inventory records updated")
 
 def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=None):
 
@@ -47,31 +49,31 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
         raise ValueError('part-size must be more than 1 MB '
                          'and less than 4096 MB')
 
-    print('Reading file...')
+    logger.info('Reading file...')
     file_to_upload = open(file_path, mode='rb')
-    print('Opened single file.')
+    logger.info('Opened single file.')
 
     part_size = part_size * 1024 * 1024
 
     file_size = file_to_upload.seek(0, 2)
 
-    nowtime = pd.Timestamp.now(tz=get_localzone())
+    nowtime = pd.Timestamp.utcnow()
     encoded_filename =  base64.b64encode(os.path.basename(file_path).encode()).decode()
     arc_desc = f'<m><v>4</v><p>{encoded_filename}</p><lm>{nowtime.strftime("%Y%m%dT%H%M%SZ")}</lm></m>'
 
     if file_size < 4096:
-        print('File size is less than 4 MB. Uploading in one request...')
+        logger.info('File size is less than 4 MB. Uploading in one request...')
 
         response = glacier.upload_archive(
             vaultName=vault_name,
             archiveDescription=arc_desc,
             body=file_to_upload)
 
-        print(f'{file_path} uploaded successful.')
-        print('Glacier tree hash: %s' % response['checksum'])
-        print('Location: %s' % response['location'])
-        print('Archive ID: %s' % response['archiveId'])
-        print('Done.')
+        logger.info(f'{file_path} uploaded successful.')
+        logger.info('Glacier tree hash: %s' % response['checksum'])
+        logger.info('Location: %s' % response['location'])
+        logger.info('Archive ID: %s' % response['archiveId'])
+        logger.info('Done.')
         file_to_upload.close()
         result = {
             'CreationDate': nowtime.strftime("%Y-%m-%dT%H:%M:%SZ"), 'ArchiveId': response['archiveId'],
@@ -82,8 +84,9 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
     job_list = []
     list_of_checksums = []
 
+    pbar = tqdm.tqdm(file_size)
     if upload_id is None:
-        print('Initiating multipart upload...')
+        logger.info('Initiating multipart upload...')
         response = glacier.initiate_multipart_upload(
             vaultName=vault_name,
             archiveDescription=arc_desc,
@@ -96,11 +99,11 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
             list_of_checksums.append(None)
 
         num_parts = len(job_list)
-        print('File size is {} bytes. Will upload in {} parts.'.format(file_size, num_parts))
+        logger.info('File size is {} bytes. Will upload in {} parts.'.format(file_size, num_parts))
     else:
-        print('Resuming upload...')
+        logger.info('Resuming upload...')
 
-        print('Fetching already uploaded parts...')
+        logger.info('Fetching already uploaded parts...')
         response = glacier.list_parts(
             vaultName=vault_name,
             uploadId=upload_id
@@ -108,7 +111,7 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
         parts = response['Parts']
         part_size = response['PartSizeInBytes']
         while 'Marker' in response:
-            print('Getting more parts...')
+            logger.info('Getting more parts...')
             response = glacier.list_parts(
                 vaultName=vault_name,
                 uploadId=upload_id,
@@ -132,13 +135,31 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
                 job_list.remove(byte_start)
                 part_num = byte_start // part_size
                 list_of_checksums[part_num] = checksum
+                pbar.update(part_size if part_num != num_parts - 1 else file_size - job_list[-1])
 
-    print('Spawning threads...')
+    class _UploadResultCollector(object):
+        def __init__(self, _list_of_checksums, progessbar = None):
+            self.list_of_checksums = _list_of_checksums
+            self.progressbar = progessbar
+
+        def __call__(self, fut):
+            checksum, upload_bytes = fut.result()
+            if self.progressbar:
+                self.progressbar.update(upload_bytes)
+            self.list_of_checksums = checksum
+    _collector = _UploadResultCollector(list_of_checksums, pbar)
+
+    logger.info('Spawning threads...')
     fileblock = threading.Lock()
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures_list = {executor.submit(
-            upload_part, job, vault_name, upload_id, part_size, file_to_upload,
-            file_size, num_parts, fileblock): job // part_size for job in job_list}
+        futures_list = []
+        for job in job_list:
+            this_future = executor.submit(
+                upload_part, job, vault_name, upload_id, part_size, file_to_upload,
+                file_size, fileblock)
+            this_future.add_done_callback(_collector)
+            futures_list.append(this_future)
+
         done, not_done = concurrent.futures.wait(
             futures_list, return_when=concurrent.futures.FIRST_EXCEPTION)
         if len(not_done) > 0:
@@ -148,36 +169,38 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
             for future in done:
                 e = future.exception()
                 if e is not None:
-                    print('Exception occured: %r' % e)
-            print('Resuming upload. Upload id: %s' % upload_id)
+                    logger.error('Exception occured: %r' % e)
+            logger.info('Resuming upload. Upload id: %s' % upload_id)
             file_to_upload.close()
             return upload_one_file(vault_name, file_path, part_size, num_threads, upload_id)
-        else:
-            # all threads completed without raising
-            for future in done:
-                job_index = futures_list[future]
-                list_of_checksums[job_index] = future.result()
+        # else:
+        #     # all threads completed without raising
+        #     for future in done:
+        #         job_index = futures_list[future]
+        #         list_of_checksums[job_index] = future.result()
 
-    if len(list_of_checksums) != num_parts:
-        print('List of checksums incomplete. Recalculating...')
+    if len(_collector.progressbar) != num_parts:
+        logger.info('List of checksums incomplete. Recalculating...')
         list_of_checksums = []
         for byte_pos in range(0, file_size, part_size):
             part_num = int(byte_pos / part_size)
-            print('Checksum %s of %s...' % (part_num + 1, num_parts))
+            logger.info('Checksum %s of %s...' % (part_num + 1, num_parts))
             file_to_upload.seek(byte_pos)
             part = file_to_upload.read(part_size)
             list_of_checksums.append(calculate_tree_hash(part, part_size))
+    else:
+        list_of_checksums = _collector.list_of_checksums
 
     total_tree_hash = calculate_total_tree_hash(list_of_checksums)
 
-    print('Completing multipart upload...')
+    logger.info('Completing multipart upload...')
     response = glacier.complete_multipart_upload(
         vaultName=vault_name, uploadId=upload_id,
         archiveSize=str(file_size), checksum=total_tree_hash)
-    print(f'{file_path} uploaded successful.')
-    print('Calculated total tree hash: %s' % total_tree_hash)
-    print('Glacier total tree hash: %s' % response['checksum'])
-    print('Done.')
+    logger.info(f'{file_path} uploaded successful.')
+    logger.info('Calculated total tree hash: %s' % total_tree_hash)
+    logger.info('Glacier total tree hash: %s' % response['checksum'])
+    logger.info('Done.')
     file_to_upload.close()
     result = {
         'CreationDate': nowtime.strftime("%Y-%m-%dT%H:%M:%SZ"), 'ArchiveId': response['archiveId'],
@@ -187,19 +210,20 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
 
 
 def upload_part(byte_pos, vault_name, upload_id, part_size, fileobj, file_size,
-                num_parts, fileblock):
+                fileblock):
     fileblock.acquire()
     fileobj.seek(byte_pos)
     part = fileobj.read(part_size)
     fileblock.release()
 
+    real_part_size = len(part)
     range_header = 'bytes {}-{}/{}'.format(
-        byte_pos, byte_pos + len(part) - 1, file_size)
-    part_num = byte_pos // part_size
-    percentage = part_num / num_parts
-
-    print('Uploading part {0} of {1}... ({2:.2%})'.format(
-        part_num + 1, num_parts, percentage))
+        byte_pos, byte_pos + real_part_size - 1, file_size)
+    # part_num = byte_pos // part_size
+    # percentage = part_num / num_parts
+    #
+    # # logger.info('Uploading part {0} of {1}... ({2:.2%})'.format(
+    # #     part_num + 1, num_parts, percentage))
 
     for i in range(MAX_RETRY):
         try:
@@ -208,21 +232,21 @@ def upload_part(byte_pos, vault_name, upload_id, part_size, fileobj, file_size,
                 range=range_header, body=part)
             checksum = calculate_tree_hash(part, part_size)
             if checksum != response['checksum']:
-                print('Checksums do not match. Will try again.')
+                logger.warning('Checksums do not match. Will try again.')
                 continue
 
             # if everything worked, then we can break
             break
         except:
-            print('Upload error:', sys.exc_info()[0])
-            print('Trying again. Part {0}'.format(part_num + 1))
+            logger.error('Upload error:', sys.exc_info()[0])
+            logger.error('Trying again. Part @ {0}-{1}'.format(byte_pos, byte_pos + real_part_size - 1))
     else:
-        print('After multiple attempts, still failed to upload part')
-        print('Exiting.')
+        logger.critical('After multiple attempts, still failed to upload part')
+        logger.critical('Exiting.')
         sys.exit(1)
 
     del part
-    return checksum
+    return checksum, real_part_size
 
 
 def calculate_tree_hash(part, part_size):
@@ -256,13 +280,13 @@ def submit_inventory_update(_args):
     init_response = glacier.initiate_job(
         vaultName=_args.vault,
         jobParameters={
-            'Description': f'inventory job @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
+            'Description': f'Inventory requested @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
             'Type': 'inventory-retrieval',
         })
     if init_response['ResponseMetadata']['HTTPStatusCode'] // 100 == 2:
-        print(f"Inventory update job submitted, job id: {init_response['jobId']}")
+        logger.info(f"Inventory update job submitted, job id: {init_response['jobId']}")
     else:
-        print(f"Inventory update job submission failed")
+        logger.error(f"Inventory update job submission failed")
 
 
 def submit_downloads(_args):
@@ -276,14 +300,14 @@ def submit_downloads(_args):
         init_response = glacier.initiate_job(
             vaultName=_args.vault,
             jobParameters={
-                'Description': f'Download {fname}',
+                'Description': f'Download {fname} requested @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
                 'Type': 'archive-retrieval',
                 'ArchiveId': aid
             })
         if init_response['ResponseMetadata']['HTTPStatusCode'] // 100 == 2:
-            print(f"Download job for {fname} submitted, job id: {init_response['jobId']}")
+            logger.info(f"Download job for {fname} submitted, job id: {init_response['jobId']}")
         else:
-            print(f"Download job for {fname} failed")
+            logger.error(f"Download job for {fname} failed")
 
 
 @lru_cache
@@ -324,37 +348,33 @@ def get_inventory_list(inventory_dict):
     return pd.concat([df, df.ArchiveDescription.apply(parse_description)], axis=1)
 
 
-
-def download_job(job_output, chunk_size=64, myout=sys.stdout):
+def download_job(job_output, chunk_size=64):
     filename, _ = parse_description(job_output['archiveDescription'])
     usename = filename
     suffix = 0
     while os.path.exists(usename):
         usename = filename + '.' + str(suffix)
-    myout.write(f"Start downloading {filename} to {usename}\n")
+    logger.info(f"Start downloading {filename} to {usename}\n")
     total_length = float(job_output['ResponseMetadata']['HTTPHeaders']['content-length'])
     bytes_written = 0
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=chunk_size):
             bytes_written += f.write(chunk)
-            myout.write(("{} of {} ({:.2%}) written\n".format(bytes_written, total_length, bytes_written/total_length)))
-            myout.flush()
-    myout.write(f"Finish downloading {filename} to {usename}\n")
-    myout.flush()
-
+            logger.info(("{} of {} ({:.2%}) written\n".format(bytes_written, total_length, bytes_written/total_length)))
+    logger.info(f"Finish downloading {filename} to {usename}\n")
 
 def check_and_handle_jobs(_args):
     job_processed = dict()
     retry_count = MAX_RETRY
-    myout = open(_args.log_file, "w") if _args.log_file else sys.stdout
+    if _args.log_file:
+        logger.add(_args.log_file, rotation="00:00")
     status = {'Running': False}
     if os.path.exists(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json')):
-        myout.write("Loading status ...\n")
+        logger.info("Loading status ...\n")
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
-            myout.write("Another watchdog is running, exit.\n")
-            myout.close()
+            logger.info("Another watchdog is running, exit.\n")
             return
         status['Running'] = True
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
@@ -362,30 +382,28 @@ def check_and_handle_jobs(_args):
         job_processed.update(status.get("Completed", dict()))
     try:
         while True:
-            myout.write("Checking Jobs:\n")
+            logger.info("Checking Jobs:\n")
             jobs = glacier.list_jobs(vaultName=_args.vault)
             if jobs['ResponseMetadata']['HTTPStatusCode'] // 100 != 2:
-                myout.write("Cannot get job list, retry after 10 seconds ...\n")
+                logger.warning("Cannot get job list, retry after 10 seconds ...\n")
                 retry_count -= 1
                 if retry_count <= 0:
-                    myout.write("Maximum retris reached, exit!\n")
+                    logger.error("Maximum retris reached, exit!\n")
                     break
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
-            myout.flush()
             for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
                 if job_processed.get(jid, "") != cdate:
-                    myout.write(f'Processing ready job: {jid}\n')
+                    logger.info(f'Processing ready job: {jid}\n')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
                         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
                             f.write(res['body'].read())
-                        myout.write("Inventory list updated!\n")
+                        logger.info("Inventory list updated!\n")
                     elif action == "ArchiveRetrieval":
-                        download_job(res, _args.download_chunk_size*1024**2, myout)
+                        download_job(res, _args.download_chunk_size*1024**2)
                     job_processed[jid] = cdate
-                myout.flush()
             if job_df.Completed.all():
                 status['Completed'] = job_processed
                 break
@@ -393,18 +411,16 @@ def check_and_handle_jobs(_args):
             remaining.CreationDate = pd.to_datetime(remaining.CreationDate).tz_convert(tz=get_localzone())
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
-            myout.write(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
-            myout.flush()
+            logger.info(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
             time.sleep(
                 (until - pd.Timestamp.utcnow()).total_seconds()
             )
     except Exception:
-        myout.write(traceback.format_exc()+'\n')
+        logger.error(traceback.format_exc()+'\n')
     finally:
         status['Running'] = False
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
             json.dump(status, f)
-        myout.close()
 
 
 def delete_archive(_args):
@@ -421,11 +437,11 @@ def delete_archive(_args):
                 delete_res = glacier.delete_archive(vaultName=_args.vault, archiveId=aid)
                 if delete_res['ResponseMetadata']['HTTPStatusCode']  // 100 == 2:
                     success.add(aid)
-                    print(f"{fname}(id: {aid}) deleted.")
+                    logger.info(f"{fname}(id: {aid}) deleted.")
                 else:
-                    print("Error: ", str(delete_res))
+                    logger.error("Error: ", str(delete_res))
             except glacier.exceptions.ResourceNotFoundException:
-                print(f"{fname}(id: {aid}) not found.")
+                logger.error(f"{fname}(id: {aid}) not found.")
     finally:
         if raw_inventory_dict is not None:
             raw_inventory_dict['ArchiveList'] = [
@@ -433,7 +449,7 @@ def delete_archive(_args):
             ]
             with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
                 json.dump(raw_inventory_dict, f)
-            print("Local Inventory records updated")
+            logger.info("Local Inventory records updated")
 
 
 def list_inventory(_args):

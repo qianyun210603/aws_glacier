@@ -10,6 +10,8 @@ The script requires Python 3 (It is developed under python 3.8.3)
 - tabulate
 - binascii
 - hashlib
+- logru
+- tqdm
 
 All prerequisites are available in `pip`.
 
