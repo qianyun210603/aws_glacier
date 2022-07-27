@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 import base64
 from tabulate import tabulate
 import platform
-from tzlocal import get_localzone
+from dateutil.tz import tzlocal
 from loguru import logger
 
 
@@ -33,7 +33,7 @@ def upload_archive(_args):
             res = upload_one_file(_args.vault, fn, _args.upload_chunk_size, _args.num_threads)
             upload_results.append(res)
         except Exception:
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
     raw_inventory_dict = _get_raw_inventory(_args.vault)
     if raw_inventory_dict is not None:
         raw_inventory_dict['ArchiveList'].extend(upload_results)
@@ -84,7 +84,7 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
     job_list = []
     list_of_checksums = []
 
-    pbar = tqdm.tqdm(file_size)
+    bytes_to_upload = file_size
     if upload_id is None:
         logger.info('Initiating multipart upload...')
         response = glacier.initiate_multipart_upload(
@@ -135,7 +135,8 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
                 job_list.remove(byte_start)
                 part_num = byte_start // part_size
                 list_of_checksums[part_num] = checksum
-                pbar.update(part_size if part_num != num_parts - 1 else file_size - job_list[-1])
+                bytes_to_upload -= part_size if part_num != num_parts - 1 else file_size - job_list[-1]
+
 
     class _UploadResultCollector(object):
         def __init__(self, _list_of_checksums, progessbar = None):
@@ -143,16 +144,17 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
             self.progressbar = progessbar
 
         def __call__(self, fut):
-            checksum, upload_bytes = fut.result()
+            checksum, part_num, upload_bytes = fut.result()
             if self.progressbar:
                 self.progressbar.update(upload_bytes)
-            self.list_of_checksums = checksum
-    _collector = _UploadResultCollector(list_of_checksums, pbar)
+            self.list_of_checksums[part_num] = checksum
 
     logger.info('Spawning threads...')
     fileblock = threading.Lock()
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures_list = []
+        pbar = tqdm.tqdm(total=bytes_to_upload, unit="Bytes", unit_scale=True)
+        _collector = _UploadResultCollector(list_of_checksums, pbar)
         for job in job_list:
             this_future = executor.submit(
                 upload_part, job, vault_name, upload_id, part_size, file_to_upload,
@@ -162,6 +164,7 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
 
         done, not_done = concurrent.futures.wait(
             futures_list, return_when=concurrent.futures.FIRST_EXCEPTION)
+        pbar.close()
         if len(not_done) > 0:
             # an exception occured
             for future in not_done:
@@ -173,21 +176,19 @@ def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=Non
             logger.info('Resuming upload. Upload id: %s' % upload_id)
             file_to_upload.close()
             return upload_one_file(vault_name, file_path, part_size, num_threads, upload_id)
-        # else:
-        #     # all threads completed without raising
-        #     for future in done:
-        #         job_index = futures_list[future]
-        #         list_of_checksums[job_index] = future.result()
 
-    if len(_collector.progressbar) != num_parts:
+    if len(_collector.list_of_checksums) != num_parts:
         logger.info('List of checksums incomplete. Recalculating...')
         list_of_checksums = []
+        pbar = tqdm.tqdm(total=file_size, unit="Bytes", unit_scale=True)
         for byte_pos in range(0, file_size, part_size):
             part_num = int(byte_pos / part_size)
-            logger.info('Checksum %s of %s...' % (part_num + 1, num_parts))
+            #logger.info('Checksum %s of %s...' % (part_num + 1, num_parts))
             file_to_upload.seek(byte_pos)
             part = file_to_upload.read(part_size)
             list_of_checksums.append(calculate_tree_hash(part, part_size))
+            pbar.update(len(part))
+        pbar.close()
     else:
         list_of_checksums = _collector.list_of_checksums
 
@@ -219,7 +220,7 @@ def upload_part(byte_pos, vault_name, upload_id, part_size, fileobj, file_size,
     real_part_size = len(part)
     range_header = 'bytes {}-{}/{}'.format(
         byte_pos, byte_pos + real_part_size - 1, file_size)
-    # part_num = byte_pos // part_size
+    part_num = byte_pos // part_size
     # percentage = part_num / num_parts
     #
     # # logger.info('Uploading part {0} of {1}... ({2:.2%})'.format(
@@ -246,7 +247,7 @@ def upload_part(byte_pos, vault_name, upload_id, part_size, fileobj, file_size,
         sys.exit(1)
 
     del part
-    return checksum, real_part_size
+    return checksum, part_num, real_part_size
 
 
 def calculate_tree_hash(part, part_size):
@@ -280,7 +281,7 @@ def submit_inventory_update(_args):
     init_response = glacier.initiate_job(
         vaultName=_args.vault,
         jobParameters={
-            'Description': f'Inventory requested @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
+            'Description': f'Inventory requested @ {pd.Timestamp.now(tz=tzlocal()).isoformat()}',
             'Type': 'inventory-retrieval',
         })
     if init_response['ResponseMetadata']['HTTPStatusCode'] // 100 == 2:
@@ -300,7 +301,7 @@ def submit_downloads(_args):
         init_response = glacier.initiate_job(
             vaultName=_args.vault,
             jobParameters={
-                'Description': f'Download {fname} requested @ {pd.Timestamp.now(tz=get_localzone()).isoformat()}',
+                'Description': f'Download {fname} requested @ {pd.Timestamp.now(tz=tzlocal()).isoformat()}',
                 'Type': 'archive-retrieval',
                 'ArchiveId': aid
             })
@@ -322,7 +323,7 @@ def parse_description(description):
         root = ET.fromstring(description)
         # noinspection PyTypeChecker
         return pd.Series(
-            [base64.b64decode(root.find('p').text).decode('utf-8'), pd.Timestamp(root.find('lm').text).tz_convert(get_localzone())],
+            [base64.b64decode(root.find('p').text).decode('utf-8'), pd.Timestamp(root.find('lm').text).tz_convert(tzlocal())],
             index=['FileName', 'LastModify'])
     return pd.Series([description, pd.NaT], index=['FileName', 'LastModify'])
 
@@ -344,7 +345,7 @@ def get_inventory_list(inventory_dict):
         )
     archive_list = inventory_dict['ArchiveList']
     df = pd.DataFrame(archive_list)
-    df.CreationDate = pd.to_datetime(df.CreationDate).tz_convert(tz=get_localzone())
+    df.CreationDate = pd.to_datetime(df.CreationDate).dt.tz_convert(tzlocal())
     return pd.concat([df, df.ArchiveDescription.apply(parse_description)], axis=1)
 
 
@@ -356,11 +357,11 @@ def download_job(job_output, chunk_size=64):
         usename = filename + '.' + str(suffix)
     logger.info(f"Start downloading {filename} to {usename}\n")
     total_length = float(job_output['ResponseMetadata']['HTTPHeaders']['content-length'])
-    bytes_written = 0
+    pbar = tqdm.tqdm(total=bytes_to_upload, unit="Bytes", unit_scale=True)
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=chunk_size):
-            bytes_written += f.write(chunk)
-            logger.info(("{} of {} ({:.2%}) written\n".format(bytes_written, total_length, bytes_written/total_length)))
+            pbar.update(f.write(chunk))
+    pbar.close()
     logger.info(f"Finish downloading {filename} to {usename}\n")
 
 def check_and_handle_jobs(_args):
@@ -408,7 +409,7 @@ def check_and_handle_jobs(_args):
                 status['Completed'] = job_processed
                 break
             remaining = job_df[~job_df.Completed].copy()
-            remaining.CreationDate = pd.to_datetime(remaining.CreationDate).tz_convert(tz=get_localzone())
+            remaining.CreationDate = pd.to_datetime(remaining.CreationDate).dt.tz_convert(tz=tzlocal())
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
             logger.info(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
