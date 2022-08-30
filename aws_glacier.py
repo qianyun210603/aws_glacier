@@ -38,7 +38,7 @@ def upload_archive(_args):
     if raw_inventory_dict is not None:
         raw_inventory_dict['ArchiveList'].extend(upload_results)
         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
-            json.dump(raw_inventory_dict, f)
+            json.dump(raw_inventory_dict, f, indent=4)
         logger.info("Local Inventory records updated")
 
 def upload_one_file(vault_name, file_path, part_size, num_threads, upload_id=None):
@@ -349,33 +349,37 @@ def get_inventory_list(inventory_dict):
     return pd.concat([df, df.ArchiveDescription.apply(parse_description)], axis=1)
 
 
-def download_job(job_output, chunk_size=64):
+def download_job(job_output, chunk_size=64, pbar=False):
     filename, _ = parse_description(job_output['archiveDescription'])
     usename = filename
     suffix = 0
     while os.path.exists(usename):
         usename = filename + '.' + str(suffix)
-    logger.info(f"Start downloading {filename} to {usename}\n")
+    logger.info(f"Start downloading {filename} to {usename}")
     total_length = float(job_output['ResponseMetadata']['HTTPHeaders']['content-length'])
-    pbar = tqdm.tqdm(total=bytes_to_upload, unit="Bytes", unit_scale=True)
+    pbar = tqdm.tqdm(total=total_length, unit="Bytes", unit_scale=True) if pbar else None
+
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=chunk_size):
-            pbar.update(f.write(chunk))
-    pbar.close()
-    logger.info(f"Finish downloading {filename} to {usename}\n")
+            if pbar:
+                pbar.update(f.write(chunk))
+    if pbar:
+        pbar.close()
+    logger.info(f"Finish downloading {filename} to {usename}")
+
 
 def check_and_handle_jobs(_args):
     job_processed = dict()
     retry_count = MAX_RETRY
     if _args.log_file:
-        logger.add(_args.log_file, rotation="00:00")
+        logger.add(_args.log_file)
     status = {'Running': False}
     if os.path.exists(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json')):
-        logger.info("Loading status ...\n")
+        logger.info("Loading status ...")
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'r') as f:
             status = json.load(f)
         if status['Running']:
-            logger.info("Another watchdog is running, exit.\n")
+            logger.info("Another watchdog is running, exit.")
             return
         status['Running'] = True
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
@@ -383,27 +387,28 @@ def check_and_handle_jobs(_args):
         job_processed.update(status.get("Completed", dict()))
     try:
         while True:
-            logger.info("Checking Jobs:\n")
+            logger.info("Checking Jobs:")
             jobs = glacier.list_jobs(vaultName=_args.vault)
             if jobs['ResponseMetadata']['HTTPStatusCode'] // 100 != 2:
-                logger.warning("Cannot get job list, retry after 10 seconds ...\n")
+                logger.warning("Cannot get job list, retry after 10 seconds ...")
                 retry_count -= 1
                 if retry_count <= 0:
-                    logger.error("Maximum retris reached, exit!\n")
+                    logger.error("Maximum retris reached, exit!")
                     break
                 time.sleep(10)
                 continue
             job_df = pd.DataFrame(jobs['JobList'])
             for jid, action, cdate in job_df.loc[job_df.Completed, ['JobId', 'Action', 'CreationDate']].values:
                 if job_processed.get(jid, "") != cdate:
-                    logger.info(f'Processing ready job: {jid}\n')
+                    logger.info(f'Processing ready job: {jid}')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
                         with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
-                            f.write(res['body'].read())
-                        logger.info("Inventory list updated!\n")
+                            content = res['body'].read()
+                            f.write(content)
+                        logger.info("Inventory list updated!")
                     elif action == "ArchiveRetrieval":
-                        download_job(res, _args.download_chunk_size*1024**2)
+                        download_job(res, _args.download_chunk_size*1024**2, not bool(_args.log_file))
                     job_processed[jid] = cdate
             if job_df.Completed.all():
                 status['Completed'] = job_processed
@@ -412,12 +417,12 @@ def check_and_handle_jobs(_args):
             remaining.CreationDate = pd.to_datetime(remaining.CreationDate).dt.tz_convert(tz=tzlocal())
             earliest = remaining.loc[:, 'CreationDate'].min()
             until = earliest + pd.Timedelta('5H')
-            logger.info(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}\n")
+            logger.info(f"Earlist created job at {earliest.isoformat()}, wait until {until.isoformat()}")
             time.sleep(
                 (until - pd.Timestamp.utcnow()).total_seconds()
             )
     except Exception:
-        logger.error(traceback.format_exc()+'\n')
+        logger.error(traceback.format_exc())
     finally:
         status['Running'] = False
         with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
@@ -449,7 +454,7 @@ def delete_archive(_args):
                 x for x in raw_inventory_dict['ArchiveList'] if x['ArchiveId'] not in success
             ]
             with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
-                json.dump(raw_inventory_dict, f)
+                json.dump(raw_inventory_dict, f, indent=4)
             logger.info("Local Inventory records updated")
 
 
@@ -528,6 +533,6 @@ if __name__ == '__main__':
             subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log &",
                              shell=True)
         if 'linux' in platform.system().lower():
-            subprocess.Popen(f"aws_glacier -v {args.vault} process_job --log-file glacier.log &",
+            subprocess.Popen(f"aws_glacier -v {args.vault} process_job --log-file glacier.log > /dev/null &",
                              shell=True)
         exit(0)
