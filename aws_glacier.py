@@ -349,7 +349,7 @@ def get_inventory_list(inventory_dict):
     return pd.concat([df, df.ArchiveDescription.apply(parse_description)], axis=1)
 
 
-def download_job(job_output, chunk_size=64, pbar=False):
+def download_job(job_output, chunk_size=64, pbar=True):
     filename, _ = parse_description(job_output['archiveDescription'])
     usename = filename
     suffix = 0
@@ -357,14 +357,15 @@ def download_job(job_output, chunk_size=64, pbar=False):
         usename = filename + '.' + str(suffix)
     logger.info(f"Start downloading {filename} to {usename}")
     total_length = float(job_output['ResponseMetadata']['HTTPHeaders']['content-length'])
-    pbar = tqdm.tqdm(total=total_length, unit="Bytes", unit_scale=True) if pbar else None
+    _pbar = tqdm.tqdm(total=total_length, unit="Bytes", unit_scale=True) if pbar else None
 
     with open(filename, "wb") as f:
         for chunk in job_output['body'].iter_chunks(chunk_size=chunk_size):
-            if pbar:
-                pbar.update(f.write(chunk))
-    if pbar:
-        pbar.close()
+            bytes_written = f.write(chunk)
+            if _pbar:
+                _pbar.update(bytes_written)
+    if _pbar:
+        _pbar.close()
     logger.info(f"Finish downloading {filename} to {usename}")
 
 
@@ -408,7 +409,7 @@ def check_and_handle_jobs(_args):
                             f.write(content)
                         logger.info("Inventory list updated!")
                     elif action == "ArchiveRetrieval":
-                        download_job(res, _args.download_chunk_size*1024**2, not bool(_args.log_file))
+                        download_job(res, _args.download_chunk_size*1024**2, pbar=_args.log_file == "")
                     job_processed[jid] = cdate
             if job_df.Completed.all():
                 status['Completed'] = job_processed
@@ -533,6 +534,6 @@ if __name__ == '__main__':
             subprocess.Popen(f"python aws_glacier.py -v {args.vault} process_job --log-file glacier.log &",
                              shell=True)
         if 'linux' in platform.system().lower():
-            subprocess.Popen(f"aws_glacier -v {args.vault} process_job --log-file glacier.log > /dev/null &",
+            subprocess.Popen(f"aws_glacier -v {args.vault} process_job --log-file glacier.log > /dev/null 2>&1 &",
                              shell=True)
         exit(0)
