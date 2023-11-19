@@ -37,7 +37,7 @@ def upload_archive(_args):
     raw_inventory_dict = _get_raw_inventory(_args.vault)
     if raw_inventory_dict is not None:
         raw_inventory_dict['ArchiveList'].extend(upload_results)
-        with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
+        with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w', encoding='utf-8') as f:
             json.dump(raw_inventory_dict, f, indent=4)
         logger.info("Local Inventory records updated")
 
@@ -331,7 +331,7 @@ def parse_description(description):
 def _get_raw_inventory(vault):
     inventory_filename = os.path.join(get_meta_foler(), f'inventory_list_{vault}.json')
     if os.path.exists(inventory_filename):
-        with open(inventory_filename, 'r') as f:
+        with open(inventory_filename, 'r', encoding='utf-8') as f:
             inventory_dict = json.load(f)
             return inventory_dict
     return None
@@ -377,14 +377,14 @@ def check_and_handle_jobs(_args):
     status = {'Running': False}
     if os.path.exists(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json')):
         logger.info("Loading status ...")
-        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'r') as f:
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'r', encoding='utf-8') as f:
             status = json.load(f)
         if status['Running']:
             logger.info("Another watchdog is running, exit.")
             return
         status['Running'] = True
-        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
-            json.dump(status, f)
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w', encoding='utf-8') as f:
+            json.dump(status, f, indent=4)
         job_processed.update(status.get("Completed", dict()))
     try:
         while True:
@@ -404,9 +404,10 @@ def check_and_handle_jobs(_args):
                     logger.info(f'Processing ready job: {jid}')
                     res = glacier.get_job_output(vaultName=_args.vault, jobId=jid)
                     if action == 'InventoryRetrieval':
-                        with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'wb') as f:
-                            content = res['body'].read()
-                            f.write(content)
+                        content = json.loads(res['body'].read())
+                        with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w', encoding='utf-8') as f:
+                            json.dump(content, f, indent=4)
+                            #f.write(content)
                         logger.info("Inventory list updated!")
                     elif action == "ArchiveRetrieval":
                         download_job(res, _args.download_chunk_size*1024**2, pbar=_args.log_file == "")
@@ -426,8 +427,8 @@ def check_and_handle_jobs(_args):
         logger.error(traceback.format_exc())
     finally:
         status['Running'] = False
-        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w') as f:
-            json.dump(status, f)
+        with open(os.path.join(get_meta_foler(), f'watchdog_status_{_args.vault}.json'), 'w', encoding='utf-8') as f:
+            json.dump(status, f, indent=4)
 
 
 def delete_archive(_args):
@@ -454,7 +455,7 @@ def delete_archive(_args):
             raw_inventory_dict['ArchiveList'] = [
                 x for x in raw_inventory_dict['ArchiveList'] if x['ArchiveId'] not in success
             ]
-            with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w') as f:
+            with open(os.path.join(get_meta_foler(), f'inventory_list_{_args.vault}.json'), 'w', encoding='utf-8') as f:
                 json.dump(raw_inventory_dict, f, indent=4)
             logger.info("Local Inventory records updated")
 
@@ -469,9 +470,11 @@ def list_inventory(_args):
         return "{:.03f}{}".format(size, unit)
 
     cols = [x.strip() for x in _args.columns.split(',')]
-    inventory_list = get_inventory_list(_get_raw_inventory(_args.vault)).sort_values(by='FileName')
+    raw_inventory = _get_raw_inventory(_args.vault)
+    inventory_list = get_inventory_list(raw_inventory).sort_values(by='FileName')
     filtered = inventory_list.loc[inventory_list.FileName.str.match(_args.filter), cols]
     filtered.Size = filtered.Size.apply(size_formatter)
+    print("\nVaultARN: ", raw_inventory["VaultARN"], "\nInventoryDate: ", raw_inventory["InventoryDate"], '\n')
     print(tabulate(filtered[cols], showindex=False, headers=cols))
 
 
@@ -515,7 +518,7 @@ if __name__ == '__main__':
     parser_upload = subparsers.add_parser("upload", help="Upload files to vault")
     parser_upload.add_argument('-f', '--file-paths', default=[], nargs='+',  help="Files to upload")
     parser_upload.add_argument('--num-threads', type=int, default=2, help="No. of threads for parallel upload.")
-    parser_upload.add_argument('--upload-chunk-size', type=int, default=16,
+    parser_upload.add_argument('--upload-chunk-size', type=int, default=4,
                                 help="Upload chunksize (MB, between 4-4096 and power of 2)")
     parser_upload.set_defaults(func=upload_archive)
 
