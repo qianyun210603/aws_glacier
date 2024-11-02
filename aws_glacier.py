@@ -370,6 +370,16 @@ def download_job(job_output, chunk_size=64, pbar=True):
     logger.info(f"Finish downloading {filename} to {usename}")
 
 
+def list_jobs(_args):
+    pd.set_option('display.max_colwidth', 1024)
+    jobs = glacier.list_jobs(vaultName=_args.vault)
+    if jobs['ResponseMetadata']['HTTPStatusCode'] // 100 != 2:
+        logger.error("Failed to retrieve job list")
+        exit(1)
+    job_df = pd.DataFrame(jobs['JobList'])
+    print(job_df[["JobId", "JobDescription"]])
+
+
 def check_and_handle_jobs(_args):
     job_processed = dict()
     retry_count = MAX_RETRY
@@ -522,6 +532,10 @@ if __name__ == '__main__':
     parser_upload.add_argument('--upload-chunk-size', type=int, default=4,
                                 help="Upload chunksize (MB, between 4-4096 and power of 2)")
     parser_upload.set_defaults(func=upload_archive)
+
+    parser_job_list = subparsers.add_parser("joblist", help="Pending jobs")
+    parser_job_list.set_defaults(func=list_jobs)
+
 
     parser_debug = subparsers.add_parser("debug", help="Just for debugging")
 
