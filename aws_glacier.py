@@ -30,6 +30,7 @@ def upload_archive(_args):
     upload_results = []
     for fn in _args.file_paths:
         try:
+            logger.info(f"Start uploading {str(fn)}")
             res = upload_one_file(_args.vault, fn, _args.upload_chunk_size, _args.num_threads)
             upload_results.append(res)
         except Exception:
