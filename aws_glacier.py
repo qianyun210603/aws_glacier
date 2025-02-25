@@ -491,7 +491,7 @@ def check_and_handle_jobs(_args):
                         )
                     job_processed[jid] = cdate
 
-            flag = completeed_flag | failed_flag | aborted_flag
+            flag = job_df.Completed | failed_flag | aborted_flag
 
             if flag.all():
                 filtered_processed = {
